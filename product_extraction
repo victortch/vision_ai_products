@@ -1,0 +1,153 @@
+from google.cloud import vision
+from google.cloud.vision_v1 import types
+import cv2
+import numpy as np
+import os
+import torch
+from carvekit.api.high import HiInterface
+from rembg import remove
+import time
+
+# Set your credentials and change directory
+os.chdir('/Users/victortchervenobrejki/Desktop/PythonProjects/vision_api/')
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/Users/victortchervenobrejki/Desktop/PythonProjects/vision_api/victor-playground-410307-08a2c07c4d9d.json'
+
+input_path = '/Users/victortchervenobrejki/Desktop/PythonProjects/vision_api/input_folder'
+output_path = '/Users/victortchervenobrejki/Desktop/PythonProjects/vision_api/output_folder'
+
+def detect_objects(path):
+    """Detects objects in the file and returns the bounding polygons and barcode polygons."""
+    client = vision.ImageAnnotatorClient()
+
+    with open(path, 'rb') as image_file:
+        content = image_file.read()
+
+    image = types.Image(content=content)
+    response = client.object_localization(image=image)
+    
+    
+    polygon_sizes = []
+    all_polygons = []
+    barcode_polygons = []
+    product_polygons = []
+
+    # First, find the maximum polygon size
+    for object in response.localized_object_annotations:
+        vertices = object.bounding_poly.normalized_vertices
+        polygon = [(vertex.x, vertex.y) for vertex in vertices]
+        all_polygons.append(polygon)
+        x_coords = [vertex.x for vertex in vertices]
+        y_coords = [vertex.y for vertex in vertices]
+        polygon_size = (max(x_coords) - min(x_coords)) * (max(y_coords) - min(y_coords))
+        polygon_sizes.append(polygon_size)
+        
+
+    # Threshold for barcode detection
+    barcode_threshold = 0.5 * max(polygon_sizes)
+
+    # Now, separate barcodes and other objects
+    for i,polygon in enumerate(all_polygons):
+        
+
+        if polygon_sizes[i] < barcode_threshold:
+            barcode_polygons.append(polygon)
+        else:
+            product_polygons.append(polygon)
+
+    return product_polygons, barcode_polygons
+
+
+
+
+def cut_out_object(image_path, polygon):
+    """Cuts out the object from an image based on the provided polygon, leaving the object only."""
+    image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    height, width = image.shape[:2]
+
+    # Check if the image has an alpha channel; add one if not
+    if image.shape[2] < 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
+
+    # Create a blank mask
+    mask = np.zeros((height, width), dtype=np.uint8)
+
+    # Scale the polygon points to match the image size
+    scaled_polygon = np.array([[int(x * width), int(y * height)] for x, y in polygon], dtype=np.int32)
+
+    # Draw the polygon on the mask
+    cv2.fillPoly(mask, [scaled_polygon], 255)
+
+    # Apply the mask to the alpha channel
+    image[:, :, 3] = mask
+
+    return image
+
+def remove_background(path):
+    with open(path, 'rb') as i:
+        input_content = i.read()
+        output_content = remove(input_content)
+
+    # Delete the file at input_path
+    os.remove(path)
+
+    # Save the new file at output_path
+    with open(path, 'wb') as o:
+        o.write(output_content)
+
+
+
+
+# Replace with the path to your image file
+
+faulty_path = os.path.join(output_path, 'faulty_images')
+os.makedirs(faulty_path)
+
+processed_path = os.path.join(output_path, 'processed_images')
+os.makedirs(processed_path)
+
+
+start_time = time.time()
+
+for filename in os.listdir(input_path):
+    image_path = os.path.join(input_path,filename)
+    product_folder_name = os.path.splitext(filename)[0]
+    products, barcodes = detect_objects(image_path)
+    if(len(products)==2):
+        product_folder_path = os.path.join(processed_path, product_folder_name)
+        front_path = os.path.join(product_folder_path, 'front.png')
+        back_path = os.path.join(product_folder_path, 'back.png')
+        os.makedirs(product_folder_path)
+        front = cut_out_object(image_path, products[0])
+        back = cut_out_object(image_path, products[1])
+        cv2.imwrite(front_path, front)
+        cv2.imwrite(back_path, back)
+        remove_background(front_path)
+        remove_background(back_path)
+        
+        
+        
+        if len(barcodes) == 1:
+            barcode_path = os.path.join(product_folder_path, 'barcode.png')
+            barcode = cut_out_object(image_path, barcodes[0])
+            cv2.imwrite(barcode_path, barcode)
+            remove_background(barcode_path)
+        
+
+
+end_time = time.time()
+
+execution_time = end_time - start_time  # Calculate the total time taken
+
+print(f"Execution time: {execution_time} seconds")
+
+
+# Example usage
+# remove_background('path_to_input_file', 'path_to_output_file')
+
+
+
+
+
+
+
+
